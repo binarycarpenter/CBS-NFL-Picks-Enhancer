@@ -1,5 +1,7 @@
 (function($) {
 
+  var winPercentClassName = "winPct";
+
   var getData = function() {
 
     // pull team names for each game from the page
@@ -18,138 +20,244 @@
       }
     });
 
-    // save a reference to our custom row, creating it if it doesn't exist yet
-    var customRow = titleRows[3];
-    if(!customRow) {
-      // TODO: write makeNewTitleRow
-      //customRow = makeNewTitleRow(titleRows[2]);
-      //titlesRows[2].append(customRow);
-    }
-
     // pull data for each player's picks from the page
     var players = [];
+    var currentPlayer = {};
     var playerRows = $('#nflplayerRows tr');
-    playerRows.each(function(playerIndex) {
-      var player = { picks: [], isCurrent: $(this).hasClass('bgFan') };
-      $(this).find('td').each(function(columnIndex) {
-        if(columnIndex) {
-          var gameIndex = columnIndex - 1;
-          if(gameIndex == games.length) return false;
+    playerRows.each(function(playerIndex, playerRow) {
+      var player = { picks: [], winShares: 0, outcomesToWinShares: {}, row: playerRow };
+      var isCurrent = $(playerRow).hasClass('bgFan');
+      if(isCurrent) {
+        player.isCurrent = true;
+        currentPlayer = player;
+      }
 
-          var pick = $(this).text();
-          player.picks[gameIndex] = pick;
+      var pickIndex = 0;
+      $.each(playerRow.cells, function(cellIndex, cell) {
+       cell = $(cell);
+       if(cellIndex > 0 && !cell.hasClass(winPercentClassName)) {
 
-          games[gameIndex].unlocked = $(this).hasClass("unlocked");
+          if(pickIndex == games.length) return false;
+
+          var pick = cell.text();
+          player.picks[pickIndex] = pick;
+
+          var game = games[pickIndex++];
+          game.unlocked |= cell.hasClass("unlocked");
 
           // this is the only way to tell the outcome of the game
-          var isCorrect = $(this).hasClass("correct");
-          var isInProgress = $(this).hasClass('inprogress');
-          if(!isInProgress && (isCorrect || $(this).hasClass("incorrect"))) {
-            var game = games[gameIndex];
+          var isCorrect = cell.hasClass("correct");
+          var isInProgress = cell.hasClass('inprogress');
+          if(!isInProgress && (isCorrect || cell.hasClass("incorrect"))) {
             game.winner = isCorrect? pick : (pick == game.homeTeam)? game.awayTeam : game.homeTeam;
           }
         }
-        else { // stash the element of the player's name, will be updated with win %
-          player.nameElement = $(this);
-        }
       });
-      players[playerIndex] = player;
+      players.push(player);
+    });
+
+    var gamesToGo = 0;
+    var possibleOutcomes = 1;
+    $.each(games, function(gameIndex, game) {
+      if(game.unlocked) {
+        gamesToGo++
+      }
+      else if(!game.winner) {
+        possibleOutcomes *= 2;
+      }
     });
 
     // accumulate data about which player wins in all possible outcome permutations
-    var winStats = calculateWinStats(games, players);
+    accumulateAllPossibilities({ toGo: gamesToGo, games: games }, players, [], 0);
 
     return {
       games: games,
       players: players,
-      customRow: customRow,
-      winStats: winStats
+      currentPlayer: currentPlayer,
+      possibleOutcomes: possibleOutcomes,
+      titleRows: titleRows,
+      playerRows: playerRows
     }
   };
 
-  var calculateWinStats = function(games, players) {
-    var winStats = { totalPossibilities: 0, playerToWins: {}, outcomesToWins: [] };
-    accummulateAllPossibilities(games, players, [], 0, winStats);
-    return winStats;
-  }
-
   // recursively try every outcome permutation and accumulate win stats data for each
-  var accummulateAllPossibilities = function(games, players, outcomes, currentIndex, winStats) {
-    // we're worked through all the games, time to calculate who won with these outcomes
-    if(games.length == currentIndex) {
-      calculateWinners(games, players, outcomes, winStats);
+  var accumulateAllPossibilities = function(gameData, players, outcomes, currentIndex) {
+
+    // we've worked through all the games, time to calculate who won with these outcomes
+    if(gameData.games.length == currentIndex) {
+      accumulateWinShares(gameData.toGo, players, outcomes);
       return;
     }
 
     // if this game is already decided, add the actual winner to the outcome, and recurse
-    if(games[currentIndex].winner || games[currentIndex].unlocked) {
-      outcomes[currentIndex] = games[currentIndex].winner || "";
-      return accummulateAllPossibilities(games, players, outcomes, currentIndex + 1, winStats);
+    // or if picks aren't revealed yet for this game, no need to explore either outcome
+    if(gameData.games[currentIndex].winner || gameData.games[currentIndex].unlocked) {
+      outcomes[currentIndex] = gameData.games[currentIndex].winner || "";
+      accumulateAllPossibilities(gameData, players, outcomes, currentIndex + 1);
     }
 
-    // otherwise recursively branch we both possible outcomes
+    // otherwise recursively branch to both possible outcomes
     else {
       var outcomes1 = outcomes.slice();
-      outcomes1[currentIndex] = games[currentIndex].homeTeam;
+      outcomes1[currentIndex] = gameData.games[currentIndex].homeTeam;
 
       var outcomes2 = outcomes.slice();
-      outcomes2[currentIndex] = games[currentIndex].awayTeam;
+      outcomes2[currentIndex] = gameData.games[currentIndex].awayTeam;
 
-      accummulateAllPossibilities(games, players, outcomes1, currentIndex + 1, winStats);
-      accummulateAllPossibilities(games, players, outcomes2, currentIndex + 1, winStats);
+      accumulateAllPossibilities(gameData, players, outcomes1, currentIndex + 1);
+      accumulateAllPossibilities(gameData, players, outcomes2, currentIndex + 1);
     }
   };
 
-  var calculateWinners = function(games, players, outcomes, winStats) {
-    var winners = getWinners(players, outcomes);
-    winStats.totalPossibilities++;
-    console.log(outcomes);
+  var accumulateWinShares = function(gamesToGo, players, outcomes) {
+    var results = getResults(gamesToGo, players, outcomes);
+    var previousWinShares = 0;
 
-    // store data about who won with these outcomes
-    $.each(winners, function(playerIndex, player) {
-      var winShare = 1 / winners.length;
-      winStats.playerToWins[player] = (winStats.playerToWins[player] || 0) + winShare;
-      if(player.isCurrent) {
-        // winStats.outcomeToWins is and array with an entry for each game
-        // which is an object where each outcome (team name) maps to the number of wins for this user with that outcome
-        $.each(outcomes, function(gameIndex, outcome) {
-          var gameOutcomes = winStats.outcomesToWins[gameIndex] || {};
-          gameOutcomes[outcome] = (gameOutcomes[outcome] || 0) + winShare;
-          winStats.outcomesToWins[gameIndex] = gameOutcomes;
+    for(var score = 0; score <= outcomes.length; score++) {
+      var resultsForScore = results[score];
+      if(resultsForScore) {
+        var winShare = resultsForScore.chanceToOvertake - (previousWinShares / resultsForScore.playersWithScore.length);
+        $.each(resultsForScore.playersWithScore, function(playerIndex, player) {
+          if(winShare > 0) {
+            player.winShares += winShare;
+            previousWinShares += winShare
+            if(player.isCurrent) {
+              // outcomeToWins maps a team name the number of wins for this player when that team wins
+              $.each(outcomes, function(gameIndex, outcome) {
+                player.outcomesToWinShares[outcome] = (player.outcomesToWinShares[outcome] || 0) + winShare;
+              });
+            }
+          }
         });
       }
-    });
+    }
   };
 
-  // return the winning player(s) given these outcomes
-  var getWinners = function(players, outcomes) {
-    var winners = [];
-    var highScore = -1;
-    $.each(players, function(playerIndex, player) {
+  var getResults = function(gamesToGo, players, outcomes) {
+    var results = {};
+    $.each(players, function(playerIndex, player){
       var score = 0;
-      $.each(outcomes, function(gameIndex, outcome) {
-        if(player.picks[gameIndex] == outcome) score++;
+      $.each(outcomes, function(outcomeIndex, outcome) {
+        if(player.picks[outcomeIndex] === outcome) score++;
       });
-
-      if(score > highScore) {
-        winners = [player];
+      if(!results[score]) {
+        results[score] = { chanceToOvertake: 0, playersWithScore: [] };
       }
-      else if(score === highScore) {
-        winners.push(player);
-      }
+      results[score].playersWithScore.push(player);
     });
-    return winners;
+
+    var playersTiedOrAhead = 0;
+    var gamesBack = 0;
+    var totalGamesToMakeUp = 0;
+    for(var score = outcomes.length; score >= 0; score--) {
+      var resultsForScore = results[score];
+      if(resultsForScore) {
+        playersTiedOrAhead += resultsForScore.playersWithScore.length;
+        resultsForScore.chanceToOvertake = chanceToWin(gamesBack, totalGamesToMakeUp, gamesToGo, playersTiedOrAhead);
+      }
+      gamesBack = Math.min(playersTiedOrAhead, gamesBack + 1);
+      totalGamesToMakeUp += playersTiedOrAhead;
+    }
+    return results;
+  };
+
+  var chanceToWin = function(gamesBack, totalGamesToMakeUp, gamesToGo, playersTiedOrAhead) {
+    if(gamesBack > gamesToGo) {
+      return 0;
+    }
+    var chanceOfFirstPlace = gamesToGo === 0? 1 : chanceToMakeUpGames(gamesBack, gamesToGo);
+    return chanceOfFirstPlace / playersTiedOrAhead;
+  };
+
+  var chanceToMakeUpGames = function(gamesBack, gamesToGo) {
+    var total = 0;
+    for(var x = gamesBack; x <= gamesToGo; x++) {
+       total += chooseXFromN(x, gamesToGo);
+    }
+    return total;
+  };
+
+  var chooseXFromN = function(x, n) {
+    return (fact(n) / (fact(x) * fact(n - x))) * Math.pow(p, x) * Math.pow(1 - p, n - x);
+  };
+
+  var fact = function(x) {
+    if(x < 2) return 1;
+    else return x * fact(x - 1);
   };
 
   var addDataToPage = function(data) {
-    // populate data.customRow
-    // add winStats winPercentage
+    addColumn(1, data, 'Win<br>Chance', winPercentClassName, function(player) {
+      return getWinPct(player.winShares, data.possibleOutcomes) + "%";
+    });
+
+   var customRow = data.titleRows[3];
+    if(!customRow) {
+      var text = '<tr class="subtitle">';
+      for(var i = 0; i < data.titleRows[2].cells.length; i++) text += '<td></td>';
+      text += '</tr>';
+      customRow = $(text);
+      $(data.titleRows[2]).after(customRow);
+    }
+    customRow = $(customRow);
+
+    $.each(customRow.find('td'), function(index, cell) {
+
+      var html = "";
+      switch(index) {
+        case 0: html = "Win chances<br/>by game"; break;
+        default: {
+          var gameIndex = index - 2;
+          var game = data.games[gameIndex];
+          if(game) {
+            var homeWinPct = getWinPct(data.currentPlayer.outcomesToWinShares[game.homeTeam], data.possibleOutcomes);
+            var homeColor = game.homeTeam == data.currentPlayer.picks[gameIndex]? "#40a251" : "#d8383a";
+            var awayWinPct = getWinPct(data.currentPlayer.outcomesToWinShares[game.awayTeam], data.possibleOutcomes);
+            var awayColor = game.awayTeam == data.currentPlayer.picks[gameIndex]? "#40a251" : "#d8383a";
+            html = '<span style="color:' + homeColor + '">' + homeWinPct + '%</span> <br> ' +
+                   '<span style="color:' + awayColor + '">' + awayWinPct + '%</span>';
+          }
+        }
+      }
+      $(cell).html(html);
+    });
+  };
+
+  var addColumn = function(index, data, title, className, playerToTextFn) {
+    $.each(data.titleRows, function(rowIndex, titleRow) {
+      var existingCell = $(titleRow.cells[index]);
+      var text = rowIndex == 0? title : '';
+      if(existingCell.hasClass(className)) {
+        existingCell.html(text);
+      }
+      else {
+        var cellBefore = $(titleRow.cells[index - 1]);
+        cellBefore.after($('<td class="' + className + '">' + text +'</td>'));
+      }
+    });
+
+    $.each(data.players, function(playerIndex, player) {
+      var existingCell = $(player.row.cells[index]);
+      if(existingCell.hasClass(className)) {
+        existingCell.html(playerToTextFn(player));
+      }
+      else {
+        var cellBefore = $(player.row.cells[index - 1]);
+        cellBefore.after($('<td class="' + className + '">' + playerToTextFn(player) +'</td>'));
+      }
+    });
+  };
+
+  var getWinPct = function(winShares, possibleOutcomes) {
+    winShares = winShares || 0;
+    return Math.round((winShares * 10000) / possibleOutcomes) / 100;
   };
 
   var run = function() {
     addDataToPage(getData());
-  }
+  };
 
   run();
+  setInterval(run, 30 * 1000);
 
 })(jQuery);
