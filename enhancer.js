@@ -115,19 +115,15 @@
     for(var score = 0; score <= outcomes.length; score++) {
       var resultsForScore = results[score];
       if(resultsForScore) {
-        var winShare = null;
+        var winShare = resultsForScore.chanceToOvertake - (previousWinShares / resultsForScore.playersWithScore.length);
         $.each(resultsForScore.playersWithScore, function(playerIndex, player) {
           if(results.isImpossible && !player.isCurrent) {
             return;
           }
 
-          if(winShare === null) {
-            winShare = resultsForScore.chanceToOvertake - (previousWinShares / resultsForScore.playersWithScore.length);
-          }
-
           if(winShare > 0) {
             if(!results.isImpossible) {
-              if(pageData.gamesToGo === 0) {
+              if(pageData.possibleOutcomes === 1) {
                 var tieBreakWinners = tieBreakWinner(pageData, resultsForScore.playersWithScore);
                 winShare = tieBreakWinners.indexOf(player) >= 0? 1 : 0;
               }
@@ -198,7 +194,7 @@
     }
     // if there are 0 games left, and we didn't return above, you must be in first place
     if(gamesToGo === 0) {
-
+      return 1;
     }
     else {
       return chanceToMakeUpGames(gamesBack, gamesToGo) / playersTiedOrAhead;
@@ -228,7 +224,7 @@
     var minDiff;
     var winningPlayer = null;
     for(var i = 0; i < tiedPlayers.length; i++) {
-      var mnfPointGuess = tiedPlayers.row.cells[pageData.games[pageData.games.length + 1]];
+      var mnfPointGuess = tiedPlayers[i].row.cells[pageData.games[pageData.games.length + 1]];
       var diff = Math.abs(mnfPoints - parseInt(mnfPointGuess));
       if(!winningPlayer || diff < minDiff) {
         winningPlayer = [tiedPlayers[i]];
@@ -238,6 +234,7 @@
         winningPlayer.push(tiedPlayers[i]);
       }
     }
+    return winningPlayer;
   };
 
   var addDataToPage = function(data) {
@@ -315,7 +312,9 @@
     console.log("fetching data from page");
     var newPageData = getData();
     // make updates if game data has changed or this is the first run
-    if(oldPageData == null || (oldPageData.totalOutcomes != newPageData.totalOutcomes ||
+    if(oldPageData == null ||
+       oldPageData.players[0].row.cells.length > newPageData.players[0].row.cells.length ||
+                              (oldPageData.totalOutcomes != newPageData.totalOutcomes ||
                                oldPageData.possibleOutcomes != newPageData.possibleOutcomes ||
                                oldPageData.gamesToGo != newPageData.gamesToGo)) {
       console.log("calculating win chances");
